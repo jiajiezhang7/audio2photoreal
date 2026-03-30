@@ -32,6 +32,7 @@ from model.utils import (
 from model.vqvae import setup_tokenizer
 from torch.nn import functional as F
 from utils.misc import prGreen, prRed
+from utils.torch_load_compat import load_trusted
 
 
 class Audio2LipRegressionTransformer(torch.nn.Module):
@@ -247,7 +248,7 @@ class FiLMTransformer(nn.Module):
             trans_args = json.load(f)
 
         # set up tokenizer based on trans_arg load point
-        self.tokenizer = setup_tokenizer(trans_args["resume_pth"])
+        self.tokenizer = setup_tokenizer(trans_args["resume_pth"], device=self.device)
 
         # set up transformer
         self.transformer = GuideTransformer(
@@ -260,7 +261,7 @@ class FiLMTransformer(nn.Module):
         for param in self.transformer.parameters():
             param.requires_grad = False
         prGreen("loading TRANSFORMER checkpoint from {}".format(cp_path))
-        cp = torch.load(cp_path)
+        cp = load_trusted(cp_path)
         missing_keys, unexpected_keys = self.transformer.load_state_dict(
             cp["model_state_dict"], strict=False
         )
@@ -273,7 +274,7 @@ class FiLMTransformer(nn.Module):
     def setup_lip_models(self) -> None:
         self.lip_model = Audio2LipRegressionTransformer()
         cp_path = "./assets/iter-0200000.pt"
-        cp = torch.load(cp_path, map_location=torch.device(self.device))
+        cp = load_trusted(cp_path, map_location=torch.device(self.device))
         self.lip_model.load_state_dict(cp["model_state_dict"])
         for param in self.lip_model.parameters():
             param.requires_grad = False
@@ -318,7 +319,8 @@ class FiLMTransformer(nn.Module):
         pred = y["keyframes"]
         new_mask = y["mask"][..., :: self.step].squeeze((1, 2))
         pred[~new_mask] = 0.0  # pad the unknown
-        pose_hidden = self.frame_cond_projection(pred.detach().clone().cuda())
+        device = next(self.frame_cond_projection.parameters()).device
+        pose_hidden = self.frame_cond_projection(pred.detach().clone().to(device))
         pose_embed = self.abs_pos_encoding(pose_hidden)
         pose_tokens = self.frame_norm_cond(pose_embed)
         # do conditional dropout for guide poses

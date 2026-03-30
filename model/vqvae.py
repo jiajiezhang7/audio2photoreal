@@ -13,9 +13,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from utils.misc import broadcast_tensors
+from utils.torch_load_compat import load_trusted
 
 
-def setup_tokenizer(resume_pth: str) -> "TemporalVertexCodec":
+def setup_tokenizer(
+    resume_pth: str, device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
+) -> "TemporalVertexCodec":
     args_path = os.path.dirname(resume_pth)
     with open(os.path.join(args_path, "args.json")) as f:
         trans_args = json.load(f)
@@ -26,11 +29,11 @@ def setup_tokenizer(resume_pth: str) -> "TemporalVertexCodec":
         residual_depth=trans_args["depth"],
     )
     print("loading checkpoint from {}".format(resume_pth))
-    ckpt = torch.load(resume_pth, map_location="cpu")
+    ckpt = load_trusted(resume_pth, map_location="cpu")
     tokenizer.load_state_dict(ckpt["net"], strict=True)
     for p in tokenizer.parameters():
         p.requires_grad = False
-    tokenizer.cuda()
+    tokenizer.to(device)
     return tokenizer
 
 

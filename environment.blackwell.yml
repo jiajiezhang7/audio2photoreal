@@ -1,0 +1,19 @@
+name: a2p-blackwell
+channels:
+  - nvidia
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.10
+  - pip
+  - ffmpeg
+  - git
+  - wget
+  - cmake
+  - ninja
+  - make
+  - pkg-config
+  - scikit-learn
+  - gcc_linux-64=11
+  - gxx_linux-64=11
+  - cuda-toolkit=12.8

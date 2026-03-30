@@ -16,7 +16,9 @@ from typing import Dict, List
 import mediapy
 
 import numpy as np
+from scipy.io import wavfile
 
+import utils.compat_collections  # noqa: F401
 import torch
 import torch as th
 import torchaudio
@@ -26,9 +28,33 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 from utils.model_util import get_person_num
 from visualize.ca_body.utils.image import linear2displayBatch
+from visualize.ca_body.utils.torch import to_device
 from visualize.ca_body.utils.train import load_checkpoint, load_from_config
 
 ffmpeg_header = "ffmpeg -y "  # -hide_banner -loglevel error "
+
+
+def _runtime_device(config) -> th.device:
+    requested = os.getenv("A2P_DEVICE", "auto").strip().lower()
+    if requested != "auto":
+        return th.device(requested)
+    if th.cuda.is_available():
+        gpu = config.get("gpu", 0)
+        capability = th.cuda.get_device_capability(gpu)
+        arch = f"sm_{capability[0]}{capability[1]}"
+        if arch in th.cuda.get_arch_list():
+            return th.device(f"cuda:{gpu}")
+        print(f"CUDA architecture {arch} is unsupported by this PyTorch build; using CPU.")
+    return th.device("cpu")
+
+
+def _render_stride(device: th.device) -> int:
+    requested = os.getenv("A2P_RENDER_STRIDE")
+    if requested is not None and requested.strip() != "":
+        return max(1, int(requested))
+    # CPU rendering is prohibitively slow for full-frame videos in this repo.
+    # Keep enough temporal samples so motion remains visible in the exported mp4.
+    return 20 if device.type == "cpu" else 1
 
 
 def filter_params(params, ignore_names):
@@ -48,6 +74,23 @@ def call_ffmpeg(command: str) -> None:
         assert False, e
 
 
+def save_audio_file(path: str, audio: np.ndarray, sample_rate: int) -> None:
+    tensor = torch.tensor(audio)
+    try:
+        torchaudio.save(path, tensor, sample_rate)
+        return
+    except RuntimeError:
+        pass
+
+    audio_np = tensor.detach().cpu().numpy()
+    if np.issubdtype(audio_np.dtype, np.floating):
+        audio_np = np.clip(audio_np, -1.0, 1.0)
+        audio_np = (audio_np.T * np.iinfo(np.int16).max).astype(np.int16)
+    else:
+        audio_np = audio_np.T
+    wavfile.write(path, sample_rate, audio_np)
+
+
 class BodyRenderer(th.nn.Module):
     def __init__(
         self,
@@ -61,10 +104,10 @@ class BodyRenderer(th.nn.Module):
         assets_path = f"{config_base}/static_assets.pt"
         # config
         config = OmegaConf.load(config_path)
-        gpu = config.get("gpu", 0)
-        self.device = th.device(f"cuda:{gpu}")
+        self.device = _runtime_device(config)
+        self.render_stride = _render_stride(self.device)
         # assets
-        static_assets = AttrDict(torch.load(assets_path))
+        static_assets = AttrDict(torch.load(assets_path, map_location="cpu"))
         # build model
         self.model = load_from_config(config.model, assets=static_assets).to(
             self.device
@@ -86,7 +129,10 @@ class BodyRenderer(th.nn.Module):
         self.model.to(self.device)
         # load default parameters for renderer
         person = get_person_num(config_path)
-        self.default_inputs = th.load(f"assets/render_defaults_{person}.pth")
+        self.default_inputs = to_device(
+            th.load(f"assets/render_defaults_{person}.pth", map_location="cpu"),
+            self.device,
+        )
 
     def _write_video_stream(
         self, motion: np.ndarray, face: np.ndarray, save_name: str
@@ -96,8 +142,9 @@ class BodyRenderer(th.nn.Module):
 
     def _render_loop(self, body_pose: np.ndarray, face: np.ndarray) -> List[np.ndarray]:
         all_rgb = []
-        default_inputs_copy = copy.deepcopy(self.default_inputs)
-        for b in tqdm(range(len(body_pose))):
+        default_inputs_copy = to_device(copy.deepcopy(self.default_inputs), self.device)
+        frame_indices = list(range(0, len(body_pose), self.render_stride)) or [0]
+        for idx, b in enumerate(tqdm(frame_indices)):
             B = default_inputs_copy["K"].shape[0]
             default_inputs_copy["lbs_motion"] = (
                 th.tensor(body_pose[b : b + 1, :], device=self.device, dtype=th.float)
@@ -114,7 +161,9 @@ class BodyRenderer(th.nn.Module):
             )
             default_inputs_copy["geom"] = geom
             face_codes = (
-                th.from_numpy(face).float().cuda() if not th.is_tensor(face) else face
+                th.from_numpy(face).float().to(self.device)
+                if not th.is_tensor(face)
+                else face.to(self.device)
             )
             curr_face = th.tile(face_codes[b : b + 1, ...], (2, 1))
             default_inputs_copy["face_embs"] = curr_face
@@ -123,8 +172,11 @@ class BodyRenderer(th.nn.Module):
             rgb1 = linear2displayBatch(preds["rgb"])[1]
             rgb = th.cat((rgb0, rgb1), axis=-1).permute(1, 2, 0)
             rgb = rgb.clip(0, 255).to(th.uint8)
-            all_rgb.append(rgb.contiguous().detach().byte().cpu().numpy())
-        return all_rgb
+            rgb_np = rgb.contiguous().detach().byte().cpu().numpy()
+            next_idx = frame_indices[idx + 1] if idx + 1 < len(frame_indices) else len(body_pose)
+            repeat = max(1, next_idx - b)
+            all_rgb.extend([rgb_np] * repeat)
+        return all_rgb[: len(body_pose)]
 
     def render_full_video(
         self,
@@ -136,9 +188,9 @@ class BodyRenderer(th.nn.Module):
         tag = os.path.basename(os.path.dirname(animation_save_path))
         save_name = os.path.splitext(os.path.basename(animation_save_path))[0]
         save_name = f"{tag}_{save_name}"
-        torchaudio.save(
+        save_audio_file(
             f"/tmp/audio_{save_name}.wav",
-            torch.tensor(data_block["audio"]),
+            data_block["audio"],
             audio_sr,
         )
         if render_gt:

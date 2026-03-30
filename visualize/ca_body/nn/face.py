@@ -12,6 +12,7 @@ import torch as th
 import torch.nn as nn
 
 import visualize.ca_body.nn.layers as la
+import utils.compat_collections  # noqa: F401
 from attrdict import AttrDict
 
 

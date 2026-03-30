@@ -2,3 +2,6 @@
 *.pt
 !dataset/*/data_stats.pth
 dataset
+.cache/
+checkpoints/
+*.mp4

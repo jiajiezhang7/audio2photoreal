@@ -1,0 +1,25 @@
+name: a2p-demo
+channels:
+  - pytorch
+  - nvidia
+  - pytorch3d
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.9
+  - pip
+  - numpy=1.26.2
+  - mkl=2024.0.0
+  - ffmpeg
+  - git
+  - wget
+  - cmake
+  - ninja
+  - scikit-learn
+  - gcc_linux-64=9.5.0
+  - gxx_linux-64=9.5.0
+  - pytorch=2.0.1
+  - torchvision=0.15.2
+  - torchaudio=2.0.2
+  - pytorch-cuda=11.7
+  - pytorch3d=0.7.4

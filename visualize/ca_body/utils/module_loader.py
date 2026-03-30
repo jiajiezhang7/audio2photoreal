@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+import utils.compat_collections  # noqa: F401
 from attrdict import AttrDict
 
 from torch import nn

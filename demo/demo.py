@@ -7,8 +7,10 @@ LICENSE file in the root directory of this source tree.
 
 import copy
 import json
+import os
 from typing import Dict, Union
 
+import utils.compat_collections  # noqa: F401
 import gradio as gr
 import numpy as np
 import torch
@@ -19,7 +21,34 @@ from model.cfg_sampler import ClassifierFreeSampleModel
 from model.diffusion import FiLMTransformer
 from utils.misc import fixseed
 from utils.model_util import create_model_and_diffusion, load_model
+from utils.torch_load_compat import load_trusted
 from visualize.render_codes import BodyRenderer
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    value = os.getenv(name, default).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return int(value)
+
+
+def _runtime_device() -> str:
+    requested = os.getenv("A2P_DEVICE", "auto").strip().lower()
+    if requested != "auto":
+        return requested
+    if not torch.cuda.is_available():
+        return "cpu"
+    capability = torch.cuda.get_device_capability(0)
+    arch = f"sm_{capability[0]}{capability[1]}"
+    if arch not in torch.cuda.get_arch_list():
+        print(f"CUDA architecture {arch} is unsupported by this PyTorch build; using CPU.")
+        return "cpu"
+    return "cuda:0"
 
 
 class GradioModel:
@@ -31,7 +60,7 @@ class GradioModel:
             pose_args, "checkpoints/diffusion/c1_pose/model000340000.pt"
         )
         # load standardization stuff
-        stats = torch.load("dataset/PXB184/data_stats.pth")
+        stats = load_trusted("dataset/PXB184/data_stats.pth")
         stats["pose_mean"] = stats["pose_mean"].reshape(-1)
         stats["pose_std"] = stats["pose_std"].reshape(-1)
         self.stats = stats
@@ -50,7 +79,7 @@ class GradioModel:
         with open(args_path) as f:
             args = json.load(f)
         args = AttrDict(args)
-        args.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        args.device = _runtime_device()
         print("running on...", args.device)
         args.model_path = model_path
         args.output_dir = "/tmp/gradio/"
@@ -61,7 +90,7 @@ class GradioModel:
         ## create model
         model, diffusion = create_model_and_diffusion(args, split_type="test")
         print(f"Loading checkpoints from [{args.model_path}]...")
-        state_dict = torch.load(args.model_path, map_location=args.device)
+        state_dict = load_trusted(args.model_path, map_location=args.device)
         load_model(model, state_dict)
         model = ClassifierFreeSampleModel(model)
         model.eval()
@@ -273,4 +302,8 @@ demo = gr.Interface(
 
 if __name__ == "__main__":
     fixseed(10)
-    demo.launch(share=True)
+    demo.launch(
+        share=_env_flag("A2P_GRADIO_SHARE", "0"),
+        server_name=os.getenv("A2P_GRADIO_HOST", "127.0.0.1"),
+        server_port=_env_int("A2P_GRADIO_PORT", 7860),
+    )

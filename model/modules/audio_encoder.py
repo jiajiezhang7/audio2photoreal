@@ -8,6 +8,7 @@ LICENSE file in the root directory of this source tree.
 import fairseq
 import torch as th
 import torchaudio as ta
+from utils.fairseq_compat import load_model_ensemble_and_task
 
 wav2vec_model_path = "./assets/wav2vec_large.pt"
 
@@ -25,9 +26,7 @@ class Wav2VecEncoder(th.nn.Module):
     def __init__(self):
         super().__init__()
         self.resampler = ta.transforms.Resample(orig_freq=48000, new_freq=16000)
-        model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
-            [wav2vec_model_path]
-        )
+        model, cfg, task = load_model_ensemble_and_task([wav2vec_model_path])
         self.wav2vec_model = model[0]
 
     def forward(self, audio: th.Tensor):
@@ -106,9 +105,7 @@ class AudioTcn(th.nn.Module):
             )
 
         if use_wav2vec:
-            model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
-                [wav2vec_model_path]
-            )
+            model, cfg, task = load_model_ensemble_and_task([wav2vec_model_path])
             self.wav2vec_model = model[0]
             self.wav2vec_model.eval()
             self.wav2vec_postprocess = th.nn.Conv1d(512, 256, kernel_size=3)
